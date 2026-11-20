@@ -85,3 +85,8 @@ def test_db_dedupe_and_rate_limits(tmp_path):
     db.mark_post("1", "youtube", "posted", remote_id="abc")
     assert not due(db, "youtube", pc)
     assert due(db, "youtube", pc, now=time.time() + 86401)
+
+
+def test_censor():
+    from gta6clips.render import censor
+    assert censor("fucking") == "f***ing" and censor("Shit!") == "S***!" and censor("cash") == "cash"

@@ -50,6 +50,7 @@ render:
   width: 1080
   height: 1920
   captions: true           # burned-in word captions (needs faster-whisper)
+  censor_captions: true    # mask swear words in captions (f***), audio untouched
   whisper_model: small     # tiny / base / small / medium
   font: Arial Black
   watermark: ""            # your handle, shown small at top-right, e.g. "@gta6moments"

@@ -22,6 +22,20 @@ def ass_escape(text: str) -> str:
     return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
+PROFANITY = ("fuck", "shit", "bitch", "cunt", "nigg", "fag", "retard", "dick", "pussy", "whore",
+             "slut", "bastard", "motherf", "asshole")
+
+
+def censor(word: str) -> str:
+    """'fucking' -> 'f***ing' style mask; keeps captions brand-safe for the algorithms."""
+    low = word.lower()
+    for bad in PROFANITY:
+        i = low.find(bad)
+        if i >= 0:
+            return word[: i + 1] + "*" * (len(bad) - 1) + word[i + len(bad):]
+    return word
+
+
 def caption_chunks(words: list[Word], max_words: int = 3, max_gap: float = 0.6,
                    max_len: float = 1.6) -> list[tuple[float, float, str]]:
     """Group words into short punchy on-screen chunks."""
@@ -89,8 +103,10 @@ def render(src: Path, out: Path, start: float, end: float, words: list[Word], ho
     fg_w = int(W * zoom) // 2 * 2
     fg_h = int(fg_w * 9 / 16) // 2 * 2
     top = (H - fg_h) // 2
-    ass = build_ass(dur, hook, credit, rc.get("watermark", ""),
-                    shift_words(words, start, end) if rc.get("captions", True) else [],
+    cap_words = shift_words(words, start, end) if rc.get("captions", True) else []
+    if rc.get("censor_captions", True):
+        cap_words = [(s, e, censor(w)) for s, e, w in cap_words]
+    ass = build_ass(dur, hook, credit, rc.get("watermark", ""), cap_words,
                     rc.get("font", "Arial Black"), video_top=top, video_bottom=top + fg_h)
     (work / "subs.ass").write_text(ass, encoding="utf-8")
     vf = (
