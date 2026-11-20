@@ -18,11 +18,11 @@ The repo root is a standard Agent Skill (`SKILL.md`). It works with any agent th
 
 ```bash
 # Claude Code
-git clone https://github.com/<owner>/gta6-shorts ~/.claude/skills/gta6-shorts
+git clone https://github.com/saracen66/gta6-shorts ~/.claude/skills/gta6-shorts
 # Codex / other agents that read ~/.agents/skills
-git clone https://github.com/<owner>/gta6-shorts ~/.agents/skills/gta6-shorts
+git clone https://github.com/saracen66/gta6-shorts ~/.agents/skills/gta6-shorts
 # or with the skills CLI
-npx skills add <owner>/gta6-shorts
+npx skills add saracen66/gta6-shorts
 ```
 
 Then ask your agent: *"set up gta6-shorts"*. It follows `SKILL.md`.
@@ -58,3 +58,7 @@ fast on takedowns with `gta6 block platform:streamer`. You are responsible for w
 ```bash
 .venv/bin/python -m pytest tests
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE). The license covers this code only, not any footage it processes.
