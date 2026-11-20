@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+config.yaml
+secrets/
+data/
+logs/
+*.mp4
+*.mkv
+*.webm

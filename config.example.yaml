@@ -1,0 +1,96 @@
+# GTA VI Shorts pipeline config. Copy to config.yaml and edit.
+# Secrets (API keys, tokens) go in .env, never here.
+
+game:
+  names: ["Grand Theft Auto VI"]          # Twitch / Kick category names
+  keywords: ["GTA 6", "GTA VI", "GTA6"]   # YouTube search terms
+  languages: ["en"]                       # stream languages to keep (empty = all)
+
+sources:
+  twitch_clips:
+    enabled: true
+    lookback_hours: 24
+    min_views: 50          # viewer-made clips with fewer views are skipped
+    max_per_cycle: 40
+  kick:
+    enabled: true
+    category_id: null      # set if auto-lookup fails (Kick category id for GTA VI)
+    clips_per_channel: 10
+    top_channels: 15       # check clips of the N biggest live GTA VI channels
+  youtube:
+    enabled: true
+    lookback_hours: 48
+    max_videos: 10         # VODs/streams scanned per cycle (search costs 100 quota units)
+    min_heat: 0.55         # "most replayed" peak threshold, 0..1
+    windows_per_video: 3
+  live_record:
+    enabled: false         # record live chunks + detect chat/audio spikes (heavy on disk/CPU)
+    platforms: ["twitch", "kick", "youtube"]
+    channels: []           # explicit channel URLs; empty = top live GTA VI streams
+    top_n: 3
+    chunk_minutes: 10
+
+streamers:
+  mode: blocklist          # blocklist = clip anyone except blocked; allowlist = only listed
+  allowlist: []            # e.g. ["twitch:summit1g", "kick:adinross", "youtube:@SomeChannel"]
+  blocklist: []            # streamers who asked you to stop. Takedown command adds here.
+
+judge:
+  model: claude-opus-5-5
+  effort: medium
+  min_score: 7             # 1-10; clips below are rejected
+  max_per_cycle: 25        # Claude calls per cycle (cost cap)
+  frames: 6
+
+render:
+  max_seconds: 59
+  min_seconds: 8
+  width: 1080
+  height: 1920
+  captions: true           # burned-in word captions (needs faster-whisper)
+  whisper_model: small     # tiny / base / small / medium
+  font: Arial Black
+  watermark: ""            # your handle, shown small at top-right, e.g. "@gta6moments"
+
+post:
+  hashtags: ["#GTA6", "#GTAVI", "#GTA6Clips", "#Gaming"]
+  disclaimer: >-
+    All gameplay footage belongs to the credited streamer and Rockstar Games.
+    Clipped and edited for commentary/highlight purposes. Streamer: if you want this
+    removed, message us and it will be taken down right away.
+  description_template: |-
+    {caption}
+
+    Streamer: {streamer} - {streamer_url}
+    Watch the full stream: {source_url}
+
+    {disclaimer}
+
+    {hashtags}
+
+platforms:
+  youtube:
+    enabled: true
+    privacy: public        # public / unlisted / private
+    max_per_day: 6         # default API quota allows ~6 uploads/day
+    min_gap_minutes: 90
+  facebook:
+    enabled: true
+    max_per_day: 10
+    min_gap_minutes: 60
+    graph_version: v24.0
+  instagram:
+    enabled: true
+    max_per_day: 10        # API hard limit is 50 per 24h
+    min_gap_minutes: 60
+    graph_version: v24.0
+  tiktok:
+    enabled: true
+    mode: direct           # direct = post now; inbox = send to TikTok drafts for you to post
+    privacy: PUBLIC_TO_EVERYONE   # unaudited apps are forced to SELF_ONLY by TikTok
+    max_per_day: 8
+    min_gap_minutes: 60
+
+schedule:
+  cycle_minutes: 30        # used by `run` (loop mode)
+  keep_days: 7             # delete raw downloads/renders older than this
