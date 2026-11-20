@@ -56,31 +56,56 @@ def _img(path: Path) -> dict:
                                         "data": base64.standard_b64encode(path.read_bytes()).decode()}}
 
 
-def judge(c: Candidate, frames: list[tuple[float, Path]], transcript: str, clip_len: float,
-          model: str, effort: str) -> Verdict | None:
-    client = anthropic.Anthropic(max_retries=3)
+class JudgeUnavailable(RuntimeError):
+    """Rate limit / usage limit / auth problem: stop judging for this cycle."""
+
+
+# Models with server-side refusal fallback (Haiku has none).
+_FALLBACK_MODELS = ("claude-opus-5", "claude-sonnet-5-5", "claude-fable-5")
+
+
+def _header(c: Candidate, clip_len: float) -> str:
     why = {k: v for k, v in c.meta.items() if v is not None}
-    content: list[dict] = [{"type": "text", "text": (
-        f"Platform: {c.platform}\nStreamer: {c.streamer}\nStream/clip title: {c.title}\n"
-        f"Source: {c.source}  signals: {why}\nClip length: {clip_len:.1f}s\n\nFrames:")}]
+    return (f"Platform: {c.platform}\nStreamer: {c.streamer}\nStream/clip title: {c.title}\n"
+            f"Source: {c.source}  signals: {why}\nClip length: {clip_len:.1f}s")
+
+
+def _clamp(v: Verdict, clip_len: float) -> Verdict:
+    v.trim_start = max(0.0, min(v.trim_start, clip_len))
+    v.trim_end = max(v.trim_start, min(v.trim_end, clip_len))
+    return v
+
+
+def judge(c: Candidate, frames: list[tuple[float, Path]], transcript: str, clip_len: float,
+          jc: dict) -> Verdict | None:
+    provider = jc.get("provider", "api")
+    if provider == "claude-code":
+        return judge_claude_code(c, frames, transcript, clip_len, jc)
+    return judge_api(c, frames, transcript, clip_len, jc)
+
+
+def judge_api(c: Candidate, frames: list[tuple[float, Path]], transcript: str, clip_len: float,
+              jc: dict) -> Verdict | None:
+    """Anthropic API (needs ANTHROPIC_API_KEY or `ant auth login`). Pay per token."""
+    model, effort = jc.get("model", "claude-haiku-5-5"), jc.get("effort", "medium")
+    client = anthropic.Anthropic(max_retries=3)
+    content: list[dict] = [{"type": "text", "text": _header(c, clip_len) + "\n\nFrames:"}]
     for t, f in frames:
         content.append({"type": "text", "text": f"t={t:.1f}s"})
         content.append(_img(f))
     content.append({"type": "text", "text": f"Transcript:\n{transcript}\n\nJudge this clip."})
+    kwargs = dict(model=model, max_tokens=16000, system=SYSTEM,
+                  messages=[{"role": "user", "content": content}], output_format=Verdict,
+                  output_config={"effort": effort})
     try:
-        resp = client.beta.messages.parse(
-            model=model,
-            max_tokens=16000,
-            system=SYSTEM,
-            messages=[{"role": "user", "content": content}],
-            output_format=Verdict,
-            output_config={"effort": effort},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-        )
-    except anthropic.RateLimitError as e:
-        log.warning("judge rate limited: %s", e)
-        raise
+        if model.startswith(_FALLBACK_MODELS):
+            resp = client.beta.messages.parse(**kwargs, betas=["server-side-fallback-2026-07-01"],
+                                              fallbacks="default")
+        else:
+            resp = client.messages.parse(**kwargs)
+    except (anthropic.RateLimitError, anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError) as e:
+        raise JudgeUnavailable(str(e)) from e
     except anthropic.APIStatusError as e:
         log.error("judge API error %s for %s: %s", e.status_code, c.id, e.message)
         return None
@@ -88,8 +113,61 @@ def judge(c: Candidate, frames: list[tuple[float, Path]], transcript: str, clip_
         log.info("judge refused %s (%s)", c.id, getattr(resp.stop_details, "category", None))
         return None
     v = resp.parsed_output
-    if v is None:
+    return _clamp(v, clip_len) if v else None
+
+
+def judge_claude_code(c: Candidate, frames: list[tuple[float, Path]], transcript: str,
+                      clip_len: float, jc: dict) -> Verdict | None:
+    """Judge through the Claude Code CLI (`claude -p`), using the logged-in Claude subscription.
+
+    Counts against the plan's usage limits instead of API billing. Good for testing.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    exe = shutil.which("claude")
+    if not exe:
+        raise JudgeUnavailable("`claude` CLI not found on PATH")
+    frame_dir = frames[0][1].parent if frames else Path.cwd()
+    lines = [_header(c, clip_len), "", "Frames (read each image file with the Read tool):"]
+    lines += [f"t={t:.1f}s: {f.resolve()}" for t, f in frames]
+    lines += ["", f"Transcript:\n{transcript}", "",
+              "Look at every frame, then judge this clip. Answer only with the structured output."]
+    cmd = [exe, "-p", "--output-format", "json",
+           "--json-schema", json.dumps(Verdict.model_json_schema()),
+           "--system-prompt", SYSTEM,
+           "--allowedTools", "Read", "--add-dir", str(frame_dir.resolve()),
+           "--setting-sources", "project", "--strict-mcp-config", "--no-session-persistence",
+           "--max-turns", "12"]
+    if jc.get("model"):
+        cmd += ["--model", jc["model"]]
+    try:
+        p = subprocess.run(cmd, input="\n".join(lines), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=600, cwd=frame_dir)
+    except subprocess.TimeoutExpired:
+        log.error("claude -p timed out for %s", c.id)
         return None
-    v.trim_start = max(0.0, min(v.trim_start, clip_len))
-    v.trim_end = max(v.trim_start, min(v.trim_end, clip_len))
-    return v
+    try:
+        out = json.loads(p.stdout)
+    except ValueError:
+        log.error("claude -p bad output for %s: %s", c.id, (p.stderr or p.stdout)[-500:])
+        return None
+    if out.get("is_error"):
+        msg = str(out.get("result", ""))
+        if any(k in msg.lower() for k in ("limit", "authenticate", "login", "oauth", "credit")):
+            raise JudgeUnavailable(msg)
+        log.error("claude -p error for %s: %s", c.id, msg[:300])
+        return None
+    data = out.get("structured_output")
+    if data is None:  # older CLI: JSON in the text result
+        try:
+            data = json.loads(out.get("result", ""))
+        except ValueError:
+            log.error("claude -p returned no structured output for %s", c.id)
+            return None
+    try:
+        return _clamp(Verdict.model_validate(data), clip_len)
+    except Exception as e:
+        log.error("claude -p verdict invalid for %s: %s", c.id, e)
+        return None

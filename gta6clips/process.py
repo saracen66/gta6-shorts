@@ -7,13 +7,11 @@ import re
 import shutil
 from pathlib import Path
 
-import anthropic
-
 from . import media
 from .config import OUT, RAW, WORK
 from .db import DB, Candidate
 from .filters import streamer_allowed
-from .judge import judge
+from .judge import JudgeUnavailable, judge
 from .render import render
 from .transcribe import as_text, transcribe
 
@@ -84,7 +82,7 @@ def process_one(cfg: dict, db: DB, c: Candidate) -> str:
 
         words = transcribe(src, rc.get("whisper_model", "small")) if media.has_audio(src) else []
         frames = media.frames(src, work / "frames", jc.get("frames", 6), win_start, win_end)
-        verdict = judge(c, frames, as_text(words), clip_len, jc["model"], jc.get("effort", "medium"))
+        verdict = judge(c, frames, as_text(words), clip_len, jc)
         if verdict is None:
             db.set_status(c.id, "failed", "no verdict")
             return "failed"
@@ -117,7 +115,7 @@ def process_one(cfg: dict, db: DB, c: Candidate) -> str:
                        default=str), encoding="utf-8")
         log.info("rendered %s score=%d %s", c.id, verdict.score, verdict.post_title)
         return "rendered"
-    except anthropic.RateLimitError:
+    except JudgeUnavailable:
         raise
     except Exception as e:
         log.exception("processing %s failed", c.id)
@@ -132,8 +130,8 @@ def process_pending(cfg: dict, db: DB) -> dict[str, int]:
     for c in db.pending_candidates(cfg["judge"]["max_per_cycle"]):
         try:
             r = process_one(cfg, db, c)
-        except anthropic.RateLimitError:
-            log.warning("rate limited; stopping this cycle")
+        except JudgeUnavailable as e:
+            log.warning("judge unavailable, stopping this cycle: %s", e)
             break
         counts[r] = counts.get(r, 0) + 1
     return counts

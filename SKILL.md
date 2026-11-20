@@ -35,13 +35,14 @@ All commands go through the wrapper. It uses the skill's own venv:
 | `discover` / `process` / `publish` | Run a single stage |
 | `status` | Counts by state, plus the last 20 posts with errors |
 | `block platform:streamer` | Takedown: blocklist the streamer, cancel queued posts, list live posts to delete by hand |
+| `test-url <url> [--start S --end E]` | Judge + render one clip/video URL (never posts). Best first test |
 | `test-render <video> [--start S --end E --hook TEXT]` | Run a local file through the edit to check the look |
 
 ## First-time setup (do in order)
 
 1. Check that Python 3.10+ and ffmpeg are installed.
 2. Run `scripts/setup.ps1` (Windows) or `scripts/setup.sh`. This creates the venv, installs `requirements.txt`, and runs `init`.
-3. Have the user fill in workspace `.env`. Per-platform steps are in [references/platform-setup.md](references/platform-setup.md). Never ask the user to paste secrets into chat. They edit `.env` themselves.
+3. Have the user fill in workspace `.env`. Only the sources they use are needed (YouTube search works without a key). Per-platform steps are in [references/platform-setup.md](references/platform-setup.md). Never ask the user to paste secrets into chat. They edit `.env` themselves.
 4. Run `auth youtube` and `auth tiktok`. Each opens a browser for the user to log in.
 5. Run `doctor` until it is clean. Disable any platform the user doesn't use in `config.yaml` (`platforms.<name>.enabled: false`).
 6. Do a dry run with publishing off. Set every `platforms.*.enabled: false`, then run `once`. Show the user the renders in `<workspace>/data/out/`: each `.mp4` has a `.json` with Claude's verdict. Turn the platforms back on after the user approves the look.
@@ -54,6 +55,7 @@ All commands go through the wrapper. It uses the skill's own venv:
 
 - **"How is it doing?"**: run `status`, then read the tail of `<workspace>/logs/pipeline.log`. Report posts per platform, rejections and their reasons, and any errors.
 - **Clips are weak**: raise `judge.min_score`, raise `sources.twitch_clips.min_views`, or lower `youtube.min_heat`. To get clips from more streams, raise `max_per_cycle`.
+- **Judge provider**: `judge.provider: api` (default, Haiku 5.5, a fraction of a cent per clip) needs `ANTHROPIC_API_KEY`. `judge.provider: claude-code` uses the logged-in Claude subscription through `claude -p`. No API bill, but it counts against the plan's usage limits, so use it for testing. If `claude auth status` shows `loggedIn: false`, the user must run `claude auth login`.
 - **Too costly**: lower `judge.max_per_cycle` or `judge.frames`. Use `judge.effort: low`. Only change `judge.model` if the user asks for a different model.
 - **Takedown or complaint from a streamer**: run `block platform:streamer` right away. Then tell the user exactly which posted IDs still need to be deleted by hand on each platform.
 - **Only clip approved streamers**: set `streamers.mode: allowlist` and list entries like `twitch:name`, `kick:slug`, `youtube:@handle`.

@@ -36,7 +36,9 @@ streamers:
   blocklist: []            # streamers who asked you to stop. Takedown command adds here.
 
 judge:
-  model: claude-opus-5-5
+  provider: api            # api = Anthropic API (pay per token)
+                           # claude-code = `claude -p` on your logged-in Claude subscription (testing)
+  model: claude-haiku-5-5  # cheapest; claude-sonnet-5-5 / claude-opus-5-5 judge better
   effort: medium
   min_score: 7             # 1-10; clips below are rejected
   max_per_cycle: 25        # Claude calls per cycle (cost cap)

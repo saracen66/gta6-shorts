@@ -205,10 +205,44 @@ def discover_kick(cfg: dict, db: DB) -> int:
 
 # --------------------------------------------------------------------------- YouTube
 def youtube_search(cfg: dict) -> list[dict]:
+    """[{id, title, channel, channel_id}] of recent GTA VI streams/videos.
+
+    Uses the YouTube Data API when YOUTUBE_API_KEY is set, else yt-dlp search (no key, no quota).
+    """
     key = env("YOUTUBE_API_KEY")
     sc = cfg["sources"]["youtube"]
     if not key:
-        return []
+        return _youtube_search_ytdlp(cfg, sc["max_videos"] * 2)
+    return [{"id": i["id"]["videoId"], "title": i["snippet"]["title"],
+             "channel": i["snippet"]["channelTitle"], "channel_id": i["snippet"]["channelId"]}
+            for i in _youtube_search_api(cfg, key)]
+
+
+def _youtube_search_ytdlp(cfg: dict, n: int) -> list[dict]:
+    import json
+    import urllib.parse
+    out, seen = [], set()
+    for kw in cfg["game"]["keywords"][:2]:
+        try:
+            q = urllib.parse.quote_plus(f"{kw} stream")
+            # sp=CAI%3D = sort by upload date
+            p = media.ytdlp(["--flat-playlist", "-J", "--playlist-end", str(n),
+                             f"https://www.youtube.com/results?search_query={q}&sp=CAI%253D"],
+                            timeout=180)
+        except RuntimeError as e:
+            log.warning("yt-dlp search failed: %s", e)
+            continue
+        for e in json.loads(p.stdout).get("entries") or []:
+            if e.get("id") and e["id"] not in seen and (e.get("duration") or 0) >= 600:
+                seen.add(e["id"])
+                out.append({"id": e["id"], "title": e.get("title", ""),
+                            "channel": e.get("channel") or e.get("uploader") or "",
+                            "channel_id": e.get("channel_id") or ""})
+    return out
+
+
+def _youtube_search_api(cfg: dict, key: str) -> list[dict]:
+    sc = cfg["sources"]["youtube"]
     after = _iso(datetime.now(timezone.utc) - timedelta(hours=sc["lookback_hours"]))
     q = "|".join(f'"{k}"' for k in cfg["game"]["keywords"])
     params = {"part": "snippet", "q": q, "type": "video", "videoCategoryId": "20",
@@ -230,9 +264,8 @@ def discover_youtube(cfg: dict, db: DB) -> int:
     for item in youtube_search(cfg):
         if scanned >= sc["max_videos"]:
             break
-        vid = item["id"]["videoId"]
-        sn = item["snippet"]
-        channel, channel_id = sn["channelTitle"], sn["channelId"]
+        vid, title = item["id"], item["title"]
+        channel, channel_id = item["channel"], item["channel_id"]
         if db.seen(f"yt:{vid}") or not streamer_allowed(cfg, "youtube", channel):
             continue
         scanned += 1
@@ -259,9 +292,9 @@ def discover_youtube(cfg: dict, db: DB) -> int:
                 streamer=channel,
                 streamer_url=(f"https://www.youtube.com/{handle}" if handle.startswith("@")
                               else f"https://www.youtube.com/channel/{channel_id}"),
-                title=sn["title"], start=start, end=end,
+                title=title, start=start, end=end,
                 moment_ts=(ts0 + start) if ts0 else None,
-                signal=heat * 10, meta={"heat": heat, "vod_title": sn["title"]},
+                signal=heat * 10, meta={"heat": heat, "vod_title": title},
             )
             added += db.add_candidate(cand)
     log.info("youtube: %d new candidates from %d videos", added, scanned)

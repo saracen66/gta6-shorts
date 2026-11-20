@@ -35,9 +35,13 @@ def doctor(cfg: dict) -> int:
     add = lambda name, ok, fix="": checks.append((name, ok, fix))  # noqa: E731
     add("ffmpeg on PATH", bool(shutil.which("ffmpeg")), "install ffmpeg and add to PATH")
     add("workspace config.yaml", (ROOT / "config.yaml").exists(), "run `init`")
-    add("Claude credentials", bool(env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN")
-                                   or Path.home().joinpath(".config", "anthropic").exists()),
-        "set ANTHROPIC_API_KEY in .env or run `ant auth login`")
+    if cfg["judge"].get("provider", "api") == "claude-code":
+        add("Claude Code CLI (judge via subscription)", bool(shutil.which("claude")),
+            "install Claude Code and run `claude` once to log in")
+    else:
+        add("Claude API credentials", bool(env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN")
+                                           or Path.home().joinpath(".config", "anthropic").exists()),
+            "set ANTHROPIC_API_KEY in .env, or judge.provider: claude-code")
     src = cfg["sources"]
     if src["twitch_clips"].get("enabled") or src["live_record"].get("enabled"):
         add("Twitch app keys", bool(env("TWITCH_CLIENT_ID") and env("TWITCH_CLIENT_SECRET")),
@@ -45,8 +49,8 @@ def doctor(cfg: dict) -> int:
     if src["kick"].get("enabled"):
         add("Kick app keys", bool(env("KICK_CLIENT_ID") and env("KICK_CLIENT_SECRET")),
             "KICK_CLIENT_ID/SECRET from kick.com/settings/developer")
-    if src["youtube"].get("enabled"):
-        add("YouTube search key", bool(env("YOUTUBE_API_KEY")), "YOUTUBE_API_KEY from Google Cloud")
+    if src["youtube"].get("enabled") and not env("YOUTUBE_API_KEY"):
+        print("[--] YouTube search: no YOUTUBE_API_KEY, using yt-dlp search (fine)")
     pl = cfg["platforms"]
     if pl["youtube"].get("enabled"):
         add("YouTube upload auth", (SECRETS / "youtube_token.json").exists(), "run `auth youtube`")
@@ -104,6 +108,39 @@ def cycle(cfg: dict, db: DB, log) -> None:
     log.info("stats %s", db.stats())
 
 
+def test_url(cfg: dict, db: DB, url: str, start: float | None, end: float | None) -> int:
+    """Judge + render one URL without queueing any posts. Prints verdict and output path."""
+    from . import media
+    from .db import Candidate
+    from .process import process_one, safe_name
+    info = media.info(url)
+    platform = ("twitch" if "twitch.tv" in url else "kick" if "kick.com" in url else "youtube")
+    streamer = info.get("channel") or info.get("uploader") or "unknown"
+    streamer_url = info.get("channel_url") or info.get("uploader_url") or url
+    dur = info.get("duration") or 0
+    if start is None and dur > cfg["render"]["max_seconds"] + 30:
+        raise SystemExit(f"video is {dur:.0f}s long: pass --start/--end (max ~75s window)")
+    cid = f"test:{info.get('id', safe_name(url))}:{int(start or 0)}"
+    db.conn.execute("DELETE FROM candidates WHERE id=?", (cid,))
+    db.conn.commit()
+    c = Candidate(id=cid, source="test", platform=platform, url=url, source_url=url,
+                  streamer=streamer, streamer_url=streamer_url, title=info.get("title", ""),
+                  start=start, end=end, meta={"views": info.get("view_count")})
+    db.add_candidate(c)
+    saved = {p: dict(v) for p, v in cfg["platforms"].items()}
+    for v in cfg["platforms"].values():
+        v["enabled"] = False  # never queue posts from a test
+    result = process_one(cfg, db, c)
+    cfg["platforms"] = saved
+    row = db.conn.execute("SELECT status, error FROM candidates WHERE id=?", (cid,)).fetchone()
+    print(f"\nresult: {result}  ({row['error'] or ''})")
+    clip = db.conn.execute("SELECT file, verdict, description FROM clips WHERE id=?", (cid,)).fetchone()
+    if clip:
+        print(f"video: {clip['file']}\nverdict: {json.dumps(json.loads(clip['verdict']), indent=2)}")
+        print(f"\ndescription:\n{clip['description']}")
+    return 0 if result == "rendered" else 1
+
+
 def block_streamer(spec: str) -> None:
     """Add platform:streamer to blocklist, cancel queued posts, list live posts to delete."""
     platform, _, streamer = spec.partition(":")
@@ -127,6 +164,11 @@ def block_streamer(spec: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles choke on emoji in titles
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     load_env()
     log = setup_logging()
     ap = argparse.ArgumentParser(prog="gta6clips")
@@ -142,6 +184,8 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("status")
     a = sub.add_parser("auth"); a.add_argument("platform", choices=["youtube", "tiktok"])
     b = sub.add_parser("block", help="takedown: block platform:streamer"); b.add_argument("spec")
+    u = sub.add_parser("test-url", help="run one clip/video URL through judge + render (no posting)")
+    u.add_argument("url"); u.add_argument("--start", type=float); u.add_argument("--end", type=float)
     t = sub.add_parser("test-render", help="render a local video file through the full edit")
     t.add_argument("video"); t.add_argument("--hook", default="TEST HOOK TITLE")
     t.add_argument("--start", type=float, default=0); t.add_argument("--end", type=float, default=20)
@@ -174,6 +218,8 @@ def main(argv: list[str] | None = None) -> None:
     elif cmd == "publish":
         from .publish import publish_due
         print(publish_due(cfg, db))
+    elif cmd == "test-url":
+        return test_url(cfg, db, ap_args.url, ap_args.start, ap_args.end)
     elif cmd == "test-render":
         from .render import render
         from .transcribe import transcribe
